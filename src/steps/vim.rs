@@ -9,7 +9,7 @@ use crate::{
 };
 use directories::BaseDirs;
 use log::debug;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{
     io::{self, Write},
     process::Command,
@@ -34,10 +34,13 @@ fn nvimrc(base_dirs: &BaseDirs) -> Result<PathBuf> {
     #[cfg(windows)]
     let base_dir = base_dirs.cache_dir();
 
-    base_dir.join("nvim/init.vim").require()
+    base_dir
+        .join("nvim/init.vim")
+        .require()
+        .or_else(|_| base_dir.join("nvim/init.lua").require())
 }
 
-fn upgrade(vim: &PathBuf, vimrc: &PathBuf, ctx: &ExecutionContext) -> Result<()> {
+fn upgrade(vim: &Path, vimrc: &Path, ctx: &ExecutionContext) -> Result<()> {
     let mut tempfile = tempfile::NamedTempFile::new()?;
     tempfile.write_all(UPGRADE_VIM.replace('\r', "").as_bytes())?;
     debug!("Wrote vim script to {:?}", tempfile.path());

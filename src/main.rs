@@ -22,6 +22,7 @@ use self::error::Upgraded;
 use self::steps::{remote::*, *};
 use self::terminal::*;
 use anyhow::{anyhow, Result};
+use console::Key;
 use log::debug;
 
 use std::env;
@@ -162,10 +163,7 @@ fn run() -> Result<()> {
         runner.execute(Step::BrewCask, "Brew Cask (Intel)", || {
             unix::run_brew_cask(&ctx, unix::BrewVariant::MacIntel)
         })?;
-        runner.execute(Step::MacPorts, "MacPorts", || macos::run_macports(&ctx))?;
-        runner.execute(Step::MicrosoftAutoUpdate, "Microsoft AutoUpdate", || {
-            macos::run_msupdate(&ctx)
-        })?;
+        runner.execute(Step::Macports, "MacPorts", || macos::run_macports(&ctx))?;
     }
 
     #[cfg(unix)]
@@ -222,6 +220,9 @@ fn run() -> Result<()> {
                 .join("Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState"),
         );
 
+        #[cfg(windows)]
+        windows::insert_startup_scripts(&ctx, &mut git_repos).ok();
+
         if let Some(profile) = powershell.profile() {
             git_repos.insert_if_repo(profile);
         }
@@ -254,7 +255,9 @@ fn run() -> Result<()> {
         runner.execute(Step::Shell, "zim", || zsh::run_zim(&base_dirs, run_type))?;
         runner.execute(Step::Shell, "oh-my-zsh", || zsh::run_oh_my_zsh(&ctx))?;
         runner.execute(Step::Shell, "fisher", || unix::run_fisher(&base_dirs, run_type))?;
+        runner.execute(Step::Shell, "bash-it", || unix::run_bashit(&ctx))?;
         runner.execute(Step::Shell, "oh-my-fish", || unix::run_oh_my_fish(&ctx))?;
+        runner.execute(Step::Shell, "fish-plug", || unix::run_fish_plug(&ctx))?;
         runner.execute(Step::Tmux, "tmux", || tmux::run_tpm(&base_dirs, run_type))?;
         runner.execute(Step::Tldr, "TLDR", || unix::run_tldr(run_type))?;
         runner.execute(Step::Pearl, "pearl", || unix::run_pearl(run_type))?;
@@ -270,16 +273,17 @@ fn run() -> Result<()> {
         target_os = "dragonfly"
     )))]
     runner.execute(Step::Atom, "apm", || generic::run_apm(run_type))?;
+    runner.execute(Step::Fossil, "fossil", || generic::run_fossil(run_type))?;
     runner.execute(Step::Rustup, "rustup", || generic::run_rustup(&base_dirs, run_type))?;
     runner.execute(Step::Dotnet, ".NET", || generic::run_dotnet_upgrade(&ctx))?;
     runner.execute(Step::Choosenim, "choosenim", || generic::run_choosenim(&ctx))?;
-    runner.execute(Step::Cargo, "cargo", || generic::run_cargo_update(run_type))?;
+    runner.execute(Step::Cargo, "cargo", || generic::run_cargo_update(&ctx))?;
     runner.execute(Step::Flutter, "Flutter", || generic::run_flutter_upgrade(run_type))?;
-    runner.execute(Step::Go, "Go", || generic::run_go(&base_dirs, run_type))?;
     runner.execute(Step::Emacs, "Emacs", || emacs.upgrade(run_type))?;
     runner.execute(Step::Opam, "opam", || generic::run_opam_update(run_type))?;
     runner.execute(Step::Vcpkg, "vcpkg", || generic::run_vcpkg_update(run_type))?;
     runner.execute(Step::Pipx, "pipx", || generic::run_pipx_update(run_type))?;
+    runner.execute(Step::Pip3, "pip3", || generic::run_pip3_update(run_type))?;
     runner.execute(Step::Stack, "stack", || generic::run_stack_update(run_type))?;
     runner.execute(Step::Tlmgr, "tlmgr", || generic::run_tlmgr_update(&ctx))?;
     runner.execute(Step::Myrepos, "myrepos", || {
@@ -300,6 +304,8 @@ fn run() -> Result<()> {
     runner.execute(Step::Gcloud, "gcloud", || {
         generic::run_gcloud_components_update(run_type)
     })?;
+    runner.execute(Step::Micro, "micro", || generic::run_micro(run_type))?;
+    runner.execute(Step::Raco, "raco", || generic::run_raco_update(run_type))?;
 
     #[cfg(target_os = "linux")]
     {
@@ -320,7 +326,7 @@ fn run() -> Result<()> {
         runner.execute(Step::System, "pihole", || {
             linux::run_pihole_update(sudo.as_ref(), run_type)
         })?;
-        runner.execute(Step::Firmware, "Firmware upgrades", || linux::run_fwupdmgr(run_type))?;
+        runner.execute(Step::Firmware, "Firmware upgrades", || linux::run_fwupdmgr(&ctx))?;
         runner.execute(Step::Restarts, "Restarts", || {
             linux::run_needrestart(sudo.as_ref(), run_type)
         })?;
@@ -328,7 +334,7 @@ fn run() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        runner.execute(Step::System, "App Store", || macos::run_mas(run_type))?;
+        runner.execute(Step::Mas, "App Store", || macos::run_mas(run_type))?;
         runner.execute(Step::System, "System upgrade", || macos::upgrade_macos(&ctx))?;
     }
 
@@ -383,14 +389,14 @@ fn run() -> Result<()> {
     if config.keep_at_end() {
         print_info("\n(R)eboot\n(S)hell\n(Q)uit");
         loop {
-            match get_char() {
-                's' | 'S' => {
+            match get_key() {
+                Ok(Key::Char('s')) | Ok(Key::Char('S')) => {
                     run_shell();
                 }
-                'r' | 'R' => {
+                Ok(Key::Char('r')) | Ok(Key::Char('R')) => {
                     reboot();
                 }
-                'q' | 'Q' => (),
+                Ok(Key::Char('q')) | Ok(Key::Char('Q')) => (),
                 _ => {
                     continue;
                 }

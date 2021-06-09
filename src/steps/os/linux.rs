@@ -1,6 +1,6 @@
 use crate::error::{SkipStep, TopgradeError};
 use crate::execution_context::ExecutionContext;
-use crate::executor::{CommandExt, ExecutorExitStatus, RunType};
+use crate::executor::{CommandExt, RunType};
 use crate::terminal::{print_separator, print_warning};
 use crate::utils::{require, require_option, which, PathExt};
 use anyhow::Result;
@@ -22,6 +22,7 @@ struct OsRelease {
     id: String,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Distribution {
     Arch,
@@ -35,6 +36,7 @@ pub enum Distribution {
     Solus,
     Exherbo,
     NixOS,
+    KDENeon,
 }
 
 impl Distribution {
@@ -54,6 +56,7 @@ impl Distribution {
             Some("gentoo") => Distribution::Gentoo,
             Some("exherbo") => Distribution::Exherbo,
             Some("nixos") => Distribution::NixOS,
+            Some("neon") => Distribution::KDENeon,
             _ => {
                 if let Some(id_like) = id_like {
                     if id_like.contains(&"debian") || id_like.contains(&"ubuntu") {
@@ -87,20 +90,20 @@ impl Distribution {
         print_separator("System update");
         let sudo = ctx.sudo();
         let run_type = ctx.run_type();
-        let yes = ctx.config().yes();
         let cleanup = ctx.config().cleanup();
 
         match self {
             Distribution::Arch => upgrade_arch_linux(ctx),
             Distribution::CentOS | Distribution::Fedora => upgrade_redhat(ctx),
             Distribution::ClearLinux => upgrade_clearlinux(&sudo, run_type),
-            Distribution::Debian => upgrade_debian(&sudo, cleanup, run_type, yes),
+            Distribution::Debian => upgrade_debian(ctx),
             Distribution::Gentoo => upgrade_gentoo(ctx),
             Distribution::Suse => upgrade_suse(&sudo, run_type),
             Distribution::Void => upgrade_void(&sudo, run_type),
             Distribution::Solus => upgrade_solus(&sudo, run_type),
             Distribution::Exherbo => upgrade_exherbo(&sudo, cleanup, run_type),
             Distribution::NixOS => upgrade_nixos(&sudo, cleanup, run_type),
+            Distribution::KDENeon => upgrade_neon(ctx),
         }
     }
 
@@ -156,14 +159,17 @@ fn upgrade_arch_linux(ctx: &ExecutionContext) -> Result<()> {
     };
     debug!("Running Arch update with path: {:?}", path);
 
-    if let Some(yay) = which("yay").or_else(|| which("paru")) {
+    let yay = which("yay");
+    if let Some(yay) = &yay {
         run_type
             .execute(&yay)
             .arg("-Pw")
             .spawn()
             .and_then(|mut p| p.wait())
             .ok();
+    }
 
+    if let Some(yay) = yay.or_else(|| which("paru")) {
         let mut command = run_type.execute(&yay);
 
         command
@@ -348,24 +354,27 @@ fn upgrade_gentoo(ctx: &ExecutionContext) -> Result<()> {
     Ok(())
 }
 
-fn upgrade_debian(sudo: &Option<PathBuf>, cleanup: bool, run_type: RunType, yes: bool) -> Result<()> {
-    if let Some(sudo) = &sudo {
-        let apt = which("apt-fast").unwrap_or_else(|| PathBuf::from("/usr/bin/apt"));
-        run_type.execute(&sudo).arg(&apt).arg("update").check_run()?;
+fn upgrade_debian(ctx: &ExecutionContext) -> Result<()> {
+    if let Some(sudo) = &ctx.sudo() {
+        let apt = which("apt-fast").unwrap_or_else(|| PathBuf::from("/usr/bin/apt-get"));
+        ctx.run_type().execute(&sudo).arg(&apt).arg("update").check_run()?;
 
-        let mut command = run_type.execute(&sudo);
+        let mut command = ctx.run_type().execute(&sudo);
         command.arg(&apt).arg("dist-upgrade");
-        if yes {
+        if ctx.config().yes() {
             command.arg("-y");
+        }
+        if let Some(args) = ctx.config().apt_arguments() {
+            command.args(args.split_whitespace());
         }
         command.check_run()?;
 
-        if cleanup {
-            run_type.execute(&sudo).arg(&apt).arg("clean").check_run()?;
+        if ctx.config().cleanup() {
+            ctx.run_type().execute(&sudo).arg(&apt).arg("clean").check_run()?;
 
-            let mut command = run_type.execute(&sudo);
+            let mut command = ctx.run_type().execute(&sudo);
             command.arg(&apt).arg("autoremove");
-            if yes {
+            if ctx.config().yes() {
                 command.arg("-y");
             }
             command.check_run()?;
@@ -455,6 +464,31 @@ fn upgrade_nixos(sudo: &Option<PathBuf>, cleanup: bool, run_type: RunType) -> Re
     Ok(())
 }
 
+fn upgrade_neon(ctx: &ExecutionContext) -> Result<()> {
+    // KDE neon is ubuntu based but uses it's own manager, pkcon
+    // running apt update with KDE neon is an error
+    // in theory rpm based distributions use pkcon as well, though that
+    // seems rare
+    // if that comes up we need to create a Distribution::PackageKit or some such
+    if let Some(sudo) = &ctx.sudo() {
+        let pkcon = which("pkcon").unwrap();
+        // pkcon ignores update with update and refresh provided together
+        ctx.run_type().execute(&sudo).arg(&pkcon).arg("refresh").check_run()?;
+        let mut exe = ctx.run_type().execute(&sudo);
+        let cmd = exe.arg(&pkcon).arg("update");
+        if ctx.config().yes() {
+            cmd.arg("-y");
+        }
+        if ctx.config().cleanup() {
+            cmd.arg("--autoremove");
+        }
+        // from pkcon man, exit code 5 is 'Nothing useful was done.'
+        cmd.check_run_with_codes(&[5])?;
+    }
+
+    Ok(())
+}
+
 pub fn run_needrestart(sudo: Option<&PathBuf>, run_type: RunType) -> Result<()> {
     let sudo = require_option(sudo, String::from("sudo is not installed"))?;
     let needrestart = require("needrestart")?;
@@ -471,7 +505,7 @@ pub fn run_needrestart(sudo: Option<&PathBuf>, run_type: RunType) -> Result<()> 
     Ok(())
 }
 
-pub fn run_fwupdmgr(run_type: RunType) -> Result<()> {
+pub fn run_fwupdmgr(ctx: &ExecutionContext) -> Result<()> {
     let fwupdmgr = require("fwupdmgr")?;
 
     if is_wsl()? {
@@ -480,17 +514,18 @@ pub fn run_fwupdmgr(run_type: RunType) -> Result<()> {
 
     print_separator("Firmware upgrades");
 
-    for argument in vec!["refresh", "get-updates"].into_iter() {
-        let exit_status = run_type.execute(&fwupdmgr).arg(argument).spawn()?.wait()?;
+    ctx.run_type()
+        .execute(&fwupdmgr)
+        .arg("refresh")
+        .check_run_with_codes(&[2])?;
 
-        if let ExecutorExitStatus::Wet(e) = exit_status {
-            if !(e.success() || e.code().map(|c| c == 2).unwrap_or(false)) {
-                return Err(TopgradeError::ProcessFailed(e).into());
-            }
-        }
+    let mut upgrade = ctx.run_type().execute(&fwupdmgr);
+
+    upgrade.arg("update");
+    if ctx.config().yes() {
+        upgrade.arg("-y");
     }
-
-    Ok(())
+    upgrade.check_run_with_codes(&[2])
 }
 
 pub fn flatpak_update(run_type: RunType) -> Result<()> {

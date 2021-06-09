@@ -1,23 +1,44 @@
 #![allow(unused_imports)]
-use crate::error::{SkipStep, TopgradeError};
 use crate::execution_context::ExecutionContext;
 use crate::executor::{CommandExt, ExecutorOutput, RunType};
 use crate::terminal::{print_separator, shell};
 use crate::utils::{self, PathExt};
+use crate::{
+    error::{SkipStep, TopgradeError},
+    terminal::print_warning,
+};
 use anyhow::Result;
 use directories::BaseDirs;
 use log::debug;
-use std::env;
 use std::path::PathBuf;
 use std::process::Command;
+use std::{env, path::Path};
+use std::{fs, io::Write};
 use tempfile::tempfile_in;
 
-pub fn run_cargo_update(run_type: RunType) -> Result<()> {
-    let cargo_update = utils::require("cargo-install-update")?;
+pub fn run_cargo_update(ctx: &ExecutionContext) -> Result<()> {
+    utils::require("cargo")?;
+    let cargo_dir = env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ctx.base_dirs().home_dir().join(".cargo"))
+        .require()?;
+    let toml_file = cargo_dir.join(".crates.toml").require()?;
+
+    if fs::metadata(&toml_file)?.len() == 0 {
+        return Err(SkipStep(format!("{} exists but empty", &toml_file.display())).into());
+    }
 
     print_separator("Cargo");
 
-    run_type
+    let cargo_update = match utils::require("cargo-install-update") {
+        Ok(e) => e,
+        Err(e) => {
+            print_warning("cargo-update isn't installed so Topgrade can't upgrade cargo packages.\nInstall cargo-update by running `cargo install cargo-update`");
+            return Err(e);
+        }
+    };
+
+    ctx.run_type()
         .execute(cargo_update)
         .args(&["install-update", "--git", "--all"])
         .check_run()
@@ -28,20 +49,6 @@ pub fn run_flutter_upgrade(run_type: RunType) -> Result<()> {
 
     print_separator("Flutter");
     run_type.execute(&flutter).arg("upgrade").check_run()
-}
-
-pub fn run_go(base_dirs: &BaseDirs, run_type: RunType) -> Result<()> {
-    let go = utils::require("go")?;
-    env::var("GOPATH")
-        .unwrap_or_else(|_| base_dirs.home_dir().join("go").to_str().unwrap().to_string())
-        .require()?;
-
-    print_separator("Go");
-    run_type
-        .execute(&go)
-        .args(&["get", "-u", "all"])
-        .env_remove("GO111MODULE")
-        .check_run()
 }
 
 pub fn run_gem(base_dirs: &BaseDirs, run_type: RunType) -> Result<()> {
@@ -67,6 +74,29 @@ pub fn run_sheldon(ctx: &ExecutionContext) -> Result<()> {
     print_separator("Sheldon");
 
     ctx.run_type().execute(&sheldon).args(&["lock", "--update"]).check_run()
+}
+
+pub fn run_fossil(run_type: RunType) -> Result<()> {
+    let fossil = utils::require("fossil")?;
+
+    print_separator("Fossil");
+
+    run_type.execute(&fossil).args(&["all", "sync"]).check_run()
+}
+
+pub fn run_micro(run_type: RunType) -> Result<()> {
+    let micro = utils::require("micro")?;
+
+    print_separator("micro");
+
+    let stdout = run_type.execute(&micro).args(&["-plugin", "update"]).string_output()?;
+    std::io::stdout().write_all(&stdout.as_bytes())?;
+
+    if stdout.contains("Nothing to install / update") || stdout.contains("One or more plugins installed") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("micro output does not indicate success: {}", stdout))
+    }
 }
 
 #[cfg(not(any(
@@ -161,6 +191,16 @@ pub fn run_pipx_update(run_type: RunType) -> Result<()> {
     print_separator("pipx");
 
     run_type.execute(&pipx).arg("upgrade-all").check_run()
+}
+
+pub fn run_pip3_update(run_type: RunType) -> Result<()> {
+    let pip3 = utils::require("pip3")?;
+    print_separator("pip3");
+
+    run_type
+        .execute(&pip3)
+        .args(&["install", "--upgrade", "--user", "pip"])
+        .check_run()
 }
 
 pub fn run_stack_update(run_type: RunType) -> Result<()> {
@@ -330,4 +370,12 @@ pub fn run_dotnet_upgrade(ctx: &ExecutionContext) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn run_raco_update(run_type: RunType) -> Result<()> {
+    let raco = utils::require("raco")?;
+
+    print_separator("Racket Package Manager");
+
+    run_type.execute(&raco).args(&["pkg", "update", "--all"]).check_run()
 }

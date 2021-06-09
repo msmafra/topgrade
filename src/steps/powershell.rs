@@ -3,6 +3,8 @@ use crate::executor::CommandExt;
 use crate::terminal::{is_dumb, print_separator};
 use crate::utils::{require_option, which, PathExt};
 use anyhow::Result;
+#[cfg(windows)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -40,7 +42,7 @@ impl Powershell {
     }
 
     #[cfg(windows)]
-    pub fn has_module(powershell: &PathBuf, command: &str) -> bool {
+    pub fn has_module(powershell: &Path, command: &str) -> bool {
         Command::new(&powershell)
             .args(&[
                 "-NoProfile",
@@ -65,6 +67,10 @@ impl Powershell {
 
         if ctx.config().verbose() {
             cmd.push("-Verbose")
+        }
+
+        if ctx.config().yes() {
+            cmd.push("-Confirm")
         }
 
         println!("Updating modules...");

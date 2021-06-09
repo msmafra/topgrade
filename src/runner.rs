@@ -1,5 +1,5 @@
 use crate::ctrlc;
-use crate::error::SkipStep;
+use crate::error::{DryRun, SkipStep};
 use crate::execution_context::ExecutionContext;
 use crate::report::{Report, StepResult};
 use crate::{config::Step, terminal::should_retry};
@@ -39,13 +39,15 @@ impl<'a> Runner<'a> {
                     self.report.push_result(Some((key, StepResult::Success)));
                     break;
                 }
+                Err(e) if e.downcast_ref::<DryRun>().is_some() => break,
                 Err(e) if e.downcast_ref::<SkipStep>().is_some() => {
                     if self.ctx.config().verbose() || self.ctx.config().show_skipped() {
                         self.report.push_result(Some((key, StepResult::Skipped(e.to_string()))));
                     }
                     break;
                 }
-                Err(_) => {
+                Err(e) => {
+                    debug!("Step {:?} failed: {:?}", key, e);
                     let interrupted = ctrlc::interrupted();
                     if interrupted {
                         ctrlc::unset_interrupted();

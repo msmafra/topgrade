@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::{env, path::Path};
 
+const INTEL_BREW: &str = "/usr/local/bin/brew";
+const ARM_BREW: &str = "/opt/homebrew/bin/brew";
 #[derive(Copy, Clone, Debug)]
 #[allow(dead_code)]
 pub enum BrewVariant {
@@ -27,14 +29,14 @@ pub enum BrewVariant {
 impl BrewVariant {
     fn binary_name(self) -> &'static str {
         match self {
-            BrewVariant::Linux => "/home/linuxbrew/.linuxbrew/bin/brew",
-            BrewVariant::MacIntel => "/usr/local/bin/brew",
-            BrewVariant::MacArm => "/opt/homebrew/bin/brew",
+            BrewVariant::Linux => "brew",
+            BrewVariant::MacIntel => INTEL_BREW,
+            BrewVariant::MacArm => ARM_BREW,
         }
     }
 
     fn both_both_exist() -> bool {
-        Path::new("/usr/local/bin/brew").exists() && Path::new("/opt/homebrew/bin/brew").exists()
+        Path::new(INTEL_BREW).exists() && Path::new(ARM_BREW).exists()
     }
 
     pub fn step_title(self) -> &'static str {
@@ -75,6 +77,17 @@ pub fn run_fisher(base_dirs: &BaseDirs, run_type: RunType) -> Result<()> {
     run_type.execute(&fish).args(&["-c", "fisher update"]).check_run()
 }
 
+pub fn run_bashit(ctx: &ExecutionContext) -> Result<()> {
+    ctx.base_dirs().home_dir().join(".bash_it").require()?;
+
+    print_separator("Bash-it");
+
+    ctx.run_type()
+        .execute("bash")
+        .args(&["-lic", &format!("bash-it update {}", ctx.config().bashit_branch())])
+        .check_run()
+}
+
 pub fn run_oh_my_fish(ctx: &ExecutionContext) -> Result<()> {
     let fish = require("fish")?;
     ctx.base_dirs()
@@ -85,6 +98,18 @@ pub fn run_oh_my_fish(ctx: &ExecutionContext) -> Result<()> {
     print_separator("oh-my-fish");
 
     ctx.run_type().execute(&fish).args(&["-c", "omf update"]).check_run()
+}
+
+pub fn run_fish_plug(ctx: &ExecutionContext) -> Result<()> {
+    let fish = require("fish")?;
+    ctx.base_dirs()
+        .home_dir()
+        .join(".local/share/fish/plug/kidonng/fish-plug/functions/plug.fish")
+        .require()?;
+
+    print_separator("fish-plug");
+
+    ctx.run_type().execute(&fish).args(&["-c", "plug update"]).check_run()
 }
 
 pub fn run_brew_formula(ctx: &ExecutionContext, variant: BrewVariant) -> Result<()> {
@@ -162,7 +187,10 @@ pub fn run_nix(ctx: &ExecutionContext) -> Result<()> {
 
     if multi_user {
         if let Some(sudo) = ctx.sudo() {
-            run_type.execute(&sudo).arg("nix").arg("upgrade-nix").check_run()?;
+            run_type
+                .execute(&sudo)
+                .args(&["-i", "nix", "upgrade-nix"])
+                .check_run()?;
         } else {
             print_warning("Need sudo to upgrade Nix");
         }

@@ -1,11 +1,14 @@
-use crate::error::SkipStep;
 use crate::execution_context::ExecutionContext;
 use crate::executor::{CommandExt, RunType};
 use crate::powershell;
 use crate::terminal::print_separator;
 use crate::utils::require;
+use crate::{error::SkipStep, steps::git::Repositories};
 use anyhow::Result;
-use std::process::Command;
+use log::debug;
+use std::convert::TryFrom;
+use std::path::Path;
+use std::{ffi::OsStr, process::Command};
 
 pub fn run_chocolatey(ctx: &ExecutionContext) -> Result<()> {
     let choco = require("choco")?;
@@ -50,7 +53,7 @@ pub fn run_scoop(cleanup: bool, run_type: RunType) -> Result<()> {
 pub fn run_wsl_topgrade(ctx: &ExecutionContext) -> Result<()> {
     let wsl = require("wsl")?;
     let topgrade = Command::new(&wsl)
-        .args(&["which", "topgrade"])
+        .args(&["bash", "-lc", "which topgrade"])
         .check_output()
         .map_err(|_| SkipStep(String::from("Could not find Topgrade installed in WSL")))?;
 
@@ -84,4 +87,24 @@ pub fn windows_update(ctx: &ExecutionContext) -> Result<()> {
 
 pub fn reboot() {
     Command::new("shutdown").args(&["/R", "/T", "0"]).spawn().ok();
+}
+
+pub fn insert_startup_scripts(ctx: &ExecutionContext, git_repos: &mut Repositories) -> Result<()> {
+    let startup_dir = ctx
+        .base_dirs()
+        .data_dir()
+        .join("Microsoft\\Windows\\Start Menu\\Programs\\Startup");
+    for entry in std::fs::read_dir(&startup_dir)?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(OsStr::to_str) == Some("lnk") {
+            if let Ok(lnk) = parselnk::Lnk::try_from(Path::new(&path)) {
+                debug!("Startup link: {:?}", lnk);
+                if let Some(path) = lnk.relative_path() {
+                    git_repos.insert_if_repo(&startup_dir.join(path));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

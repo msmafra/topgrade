@@ -5,12 +5,16 @@ use crate::terminal::print_separator;
 use crate::utils::{require, PathExt};
 use crate::{error::SkipStep, execution_context::ExecutionContext};
 use anyhow::Result;
-use log::debug;
-
 use directories::BaseDirs;
+use log::debug;
+#[cfg(unix)]
+use nix::unistd::Uid;
+#[cfg(unix)]
+use std::os::unix::prelude::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[allow(clippy::upper_case_acronyms)]
 struct NPM {
     command: PathBuf,
 }
@@ -20,12 +24,12 @@ impl NPM {
         Self { command }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fn root(&self) -> Result<PathBuf> {
         Command::new(&self.command)
             .args(&["root", "-g"])
             .check_output()
-            .map(PathBuf::from)
+            .map(|s| PathBuf::from(s.trim()))
     }
 
     fn upgrade(&self, run_type: RunType) -> Result<()> {
@@ -38,13 +42,21 @@ impl NPM {
 pub fn run_npm_upgrade(_base_dirs: &BaseDirs, run_type: RunType) -> Result<()> {
     let npm = require("npm").map(NPM::new)?;
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         let npm_root = npm.root()?;
-        if !npm_root.is_descendant_of(_base_dirs.home_dir()) {
+        if !npm_root.exists() {
+            return Err(SkipStep(format!("NPM root at {} doesn't exist", npm_root.display(),)).into());
+        }
+
+        let metadata = std::fs::metadata(&npm_root)?;
+        let uid = Uid::effective();
+
+        if metadata.uid() != uid.as_raw() {
             return Err(SkipStep(format!(
-                "NPM root at {} isn't a decandent of the user's home directory",
-                npm_root.display()
+                "NPM root at {} is owned by {} which is not the current user",
+                npm_root.display(),
+                metadata.uid()
             ))
             .into());
         }
